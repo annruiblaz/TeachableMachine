@@ -13,6 +13,7 @@ const PORT = 3000;
 
 //habilitamos el manejo d json en las solicitudes
 app.use(express.json());
+app.use(express.static('public'));
 
 //definimos las rutas dnd guardamos el modelo y sus datos d pesos
 const modelPath = path.join(__dirname, 'model.json');

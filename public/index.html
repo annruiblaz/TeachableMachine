@@ -1,0 +1,32 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Entrenar y Predecir con IA</title>
+</head>
+<body>
+<h1>Predicción</h1>
+<form id="predict-form" enctype="multipart/form-data">
+<input type="file" name="image" accept="image/*" required>
+<button type="submit">Predecir</button>
+</form>
+<h2>Resultado:</h2>
+<p id="prediction-result">Esperando predicción...</p>
+ 
+    <script>
+        document.getElementById("predict-form").addEventListener("submit", async function(event) {
+            event.preventDefault();
+            const formData = new FormData(this);
+            const response = await fetch("/predict", {
+                method: "POST",
+                body: formData
+            });
+ 
+            const result = await response.json();
+            console.log(result);
+            document.getElementById("prediction-result").innerText = `Predicción: ${result.prediction} (Confianza: ${result.confidence.toFixed(2)})`;
+        });
+</script>
+</body>
+</html>
