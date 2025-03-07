@@ -2,6 +2,8 @@ const express = require('express'); //para manejar peticiones http
 const axios = require('axios'); //nos permite hacer las solicitudes http
 const tf = require('@tensorflow/tfjs'); //para trabajar con modelos d aprendizaje profundo en JS
 const {Image, createCanvas} = require('canvas'); //nos permite manipular imgs en Node.js
+const fs = require('fs'); //modulo para manejar archivos
+const path = require('path'); //modulo para manejar rutas d archivos
 
 //creamos instancia d app express y definimos el puerto
 const app = express();
@@ -73,20 +75,38 @@ function createModel() {
     return model;
 }
 
+let savedModelJSON = null;
+let savedModelWeights = null;
+
 //función para entrenar el modelo con los datos ya procesados
 async function trainModel(model, trainData) {
+    console.log('--- Empieza entrenamiento ---');
+
     await model.fit(trainData.xs, trainData.ys, {
-        epochs: 16, //num d épocas de entrenamiento
+        epochs: 2, //num d épocas de entrenamiento
         batchSize: 64, //tamaño del lote
         shuffle: true, //mezclar los datos para mejorar el entrenamiento
         validationSplit: 0.2 //porcentaje d datos utilizados para la validación
     });
 
     console.log('--- Entrenamiento completado ---');
+
+    //** guardamos el modelo en memoria
+    savedModelJSON = await model.toJSON();
+    savedModelWeights = await model.getWeights().map(w => w.arraySync());
+    console.log('--- Modelo guardado en memoria y listo para descargar ---');
 }
 
+//ruta para descargar el modelo en JSON
+app.get('/download-model', (req, res) => {
+    if(!savedModelJSON || !savedModelWeights) {
+        return res.status(404).send('Modelo no encontrado. Entrena el modelo primero :)');
+    }
+    return res.json({model: savedModelJSON, weights: savedModelWeights});
+});
+
 //función para hacer predicciones con imgs nuevas
-async function predict(model, testData) {
+/* async function predict(model, testData) {
     const predictions = [];
     for(const item of testData) {
         const response = await axios.get(item.image, { responseType: 'arraybuffer'});
@@ -115,7 +135,7 @@ async function predict(model, testData) {
         });
     }
     console.log('Predictions: ', predictions);
-}
+} */
 
 //función principal para entrenar y probar el modelo
 async function main() {
@@ -133,8 +153,13 @@ async function main() {
 
     //entrenamos el modelo con los datos procesados
     await trainModel(model, trainData);
-    await predict(model, allData.slice(0, 10)); // y realizamos las predicciones con los 10 primeros datos del array 
+    //await predict(model, allData.slice(0, 10)); // y realizamos las predicciones con los 10 primeros datos del array 
 }
 
 //ejecutamos el metodo
 main();
+
+//inciamos el server
+app.listen(PORT, () => {
+    console.log(`Servidor activo en http://localhost:${PORT}`);
+});
