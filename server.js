@@ -1,15 +1,17 @@
 const express = require('express'); //para manejar peticiones http
 const axios = require('axios'); //nos permite hacer las solicitudes http
 const tf = require('@tensorflow/tfjs'); //para trabajar con modelos d aprendizaje profundo en JS
-const {Image, createCanvas} = require('canvas'); //nos permite manipular imgs en Node.js
 const fs = require('fs').promises; //version asincrona de fs para manejar archivos
 const path = require('path'); //modulo para manejar rutas d archivos
 const multer = require('multer'); //para manejar la subida d archivos
-const { stat } = require('fs');
+const {Image, createCanvas} = require('canvas'); //nos permite manipular imgs en Node.js
 
 //creamos instancia d app express y definimos el puerto
 const app = express();
 const PORT = 3000;
+
+//declaramos la variable global para almacenar el modelo
+let model;
 
 //habilitamos el manejo d json en las solicitudes
 app.use(express.json());
@@ -20,18 +22,34 @@ const modelPath = path.join(__dirname, 'model.json');
 const dataPath = path.join(__dirname, 'model-data.json');
 
 //urls de la api randomuser para obtener las imgs de mujeres y hombres
-const maleUrl = 'https://randomuser.me/api/?gender=male&results=50';
-const femaleUrl = 'https://randomuser.me/api/?gender=female&results=50';
+const maleUrl = 'https://randomuser.me/api/?gender=male&results=9';
+const femaleUrl = 'https://randomuser.me/api/?gender=female&results=9';
+
+//generamos el vector con las urls para obtener las imgs de los legos
+const legoImgs = [];
+for(i = 1; i <= 9; i++) {
+    legoImgs.push(`https://randomuser.me/api/portraits/lego/${i}.jpg`);
+}
+console.log('Vector Lego: ', legoImgs);
+
 
 //funcion para obtener datos d la api y estructurarlos
-async function fetchData(url) {
-    const response = await axios.get(url); //hacemos la solicitud http con axios
-    const data = response.data; //extraemos los datos d la respuesta
-    return data.results.map( user => ({
-        image: user.picture.medium, //url d la img del user
-        label: user.gender === 'male' ? 0 : 1 //asignamos la etiqueta en base al genero (0 para hombres y 1 para mujeres)
+async function fetchData(url, label) {
+    const response = await axios.get(url); //hacemos la solicitud http con axios a la url
+    return response.data.results.map( user => ({
+        image: user.picture.medium, //almacenamos la url d la img del user
+        label: label //asignamos la etiqueta (hombre/mujer/lego)
     }));
 }
+
+//funcion asincrona para obtener las imgs d legos con la etiqueta 2
+async function fetchLegoData() {
+    return legoImgs.map( url => ({
+        image: url, //usamos las url fijas q hemos creado en el vector
+        label: 2 //le asignamos la etiqueta 2
+    }));
+}
+
 
 //funcion q carga y procesa las imgs para entrenar el modelo
 async function loadAndProcessImgs(data) {
@@ -58,7 +76,11 @@ async function loadAndProcessImgs(data) {
                 .div(255);
 
             imgs.push(imgTensor);
-            labels.push(item.label);
+
+            //convertimos las etiquetas a formato one-hot (para representar las 3 clases y evitar q altere pesos)
+            let labelOneHot = [0,0,0]; //inicializamos todas a 0
+            labelOneHot[item.label] = 1; //establecemos el valor correcto según la etiqueta
+            labels.push(labelOneHot);
 
         } catch(err) {
             console.error('Error al procesar la imagen: ', item.image, err);
@@ -66,7 +88,7 @@ async function loadAndProcessImgs(data) {
     }
     return {
         xs: tf.stack(imgs).reshape([imgs.length, 72, 72, 3]), //agrupamos las imgs en un solo tensor
-        ys: tf.tensor(labels, [labels.length, 1]) //creamos el tensor d etiquetas
+        ys: tf.tensor(labels) //creamos el tensor con las etiquetas
     };
 }
 
@@ -75,13 +97,14 @@ function createModel() {
     const model = tf.sequential();
 
     model.add(tf.layers.conv2d({inputShape: [72, 72, 3], filters: 16, kernelSize: 3, activation: 'relu'}));
-    model.add(tf.layers.maxPooling2d({poolSize: 2}));
-    model.add(tf.layers.flatten());
-    model.add(tf.layers.dense({units: 10, activation: 'relu'}));
-    model.add(tf.layers.dense({units: 1, activation: 'sigmoid'}));
+    model.add(tf.layers.maxPooling2d({poolSize: 2})); //capa d maxpooling
+    model.add(tf.layers.flatten()); //aplanamos los datos para conectarlos con una capa densa
+    model.add(tf.layers.dense({units: 10, activation: 'relu'})); //capa densa con 10 neuronas
+    model.add(tf.layers.dense({units: 3, activation: 'softmax'})); //añadimos capa densa d salida con 3 neuronas (1 x clase)
 
-    model.compile({optimizer: 'adam', loss: 'binaryCrossentropy', metrics: ['accuracy']});
-    return model;
+    //compilamos el modelo especificando el optimizador y la función d perdida
+    model.compile({optimizer: 'adam', loss: 'categoricalCrossentropy', metrics: ['accuracy']});
+    return model;//una vez creado devolvemos el modelo
 }
 
 let savedModelJSON = null;
@@ -160,7 +183,7 @@ async function trainModel(model, trainData) {
     console.log('--- Empieza entrenamiento ---');
 
     await model.fit(trainData.xs, trainData.ys, {
-        epochs: 2, //num d épocas de entrenamiento
+        epochs: 10, //num d épocas de entrenamiento
         batchSize: 64, //tamaño del lote
         shuffle: true, //mezclar los datos para mejorar el entrenamiento
         validationSplit: 0.2 //porcentaje d datos utilizados para la validación
@@ -219,11 +242,16 @@ app.post('/predict', upload.single('image'), async (req, res) => {
 
         //realiza la prediccion d la img procesada con el modelo cargado
         const prediction = model.predict(imgTensor);
-        const predictionValue = (await prediction.data())[0]; //extrae la predicción numerica
-        const predictedLabel = predictionValue > 0.5 ? 'Mujer' : 'Hombre'; //interpretamos el resultado en base al value y los label q establecimos
+        const predictionsArray = await prediction.data(); //obtenemos los datos d la predicción
+
+        //identificamos la clase con + probabilidad
+        const classIndex = predictionsArray.indexOf(Math.max(...predictionsArray)); //obtenemos la probabilidad + alta del array y nos quedamos su posición en predictionsArray
+        const labels = ['Hombre', 'Mujer', 'Lego'];
+        const predictedLabel = labels[classIndex]; //obtenemos la etiqueta d la clase con + probabilidad
+
 
         //devolvemos un json con la predicción
-        res.json({ prediction: predictedLabel, confidence: predictionValue});
+        res.json({ prediction: predictedLabel, confidence: predictionsArray[classIndex]});
     } catch(err) {
         console.error('Error en la predicción: ',err);
         res.status(500).send('Error procesando la imagen');
@@ -242,12 +270,13 @@ app.listen(PORT, async () => {
     } else {
         console.log('Entrenando el modelo porque no se encontraron archivos guardados...');
 
-        //obtenemos los datos d hombres / mujeres d la api
-        const maleData = await fetchData(maleUrl);
-        const femaleData = await fetchData(femaleUrl);
+        //obtenemos los datos d hombres / mujeres / lego d la api
+        const maleData = await fetchData(maleUrl, 0);
+        const femaleData = await fetchData(femaleUrl, 1);
+        const legoData = await fetchLegoData();
 
         //almacenamos en un solo array todos los datos
-        let allData = [...maleData, ...femaleData];
+        let allData = [...maleData, ...femaleData, ...legoData];
         tf.util.shuffle(allData); //y los mezclamos aleatoriamente los datos para evitar sesgos
 
         //procesamos los datos 
